@@ -88,6 +88,9 @@ public class BLE
         [DllImport("BleWinrtDll.dll", EntryPoint = "SendData")]
         public static extern bool SendData(in BLEData data, bool block);
 
+        [DllImport("BleWinrtDll.dll", EntryPoint = "Disconnect", CharSet = CharSet.Unicode)]
+        public static extern void Disconnect(string deviceId);
+
         [DllImport("BleWinrtDll.dll", EntryPoint = "Quit")]
         public static extern void Quit();
 
@@ -137,7 +140,6 @@ public class BLE
             List<string> deviceIds = new List<string>();
             Dictionary<string, string> deviceName = new Dictionary<string, string>();
             Dictionary<string, bool> deviceIsConnectable = new Dictionary<string, bool>();
-            Impl.ScanStatus status;
             while (Impl.PollDevice(out res, true) != Impl.ScanStatus.FINISHED)
             {
                 if (!deviceIds.Contains(res.id))

@@ -36,7 +36,7 @@ guid make_guid(const wchar_t* value)
 	to_guid to_guid;
 	memset(&to_guid, 0, sizeof(to_guid));
 	int offset = 0;
-	for (int i = 0; i < wcslen(value); i++) {
+	for (int i = 0; i < (int)wcslen(value); i++) {
 		if (value[i] >= '0' && value[i] <= '9')
 		{
 			uint8_t digit = value[i] - '0';
@@ -558,6 +558,19 @@ bool SendData(BLEData* data, bool block) {
 		signal.wait(lock);
 
 	return result;
+}
+
+void Disconnect(wchar_t* deviceId) {
+	for (auto device : cache) {
+		if (hsh(deviceId) == device.first) {
+			device.second.device.Close();
+			for (auto service : device.second.services) {
+				service.second.service.Close();
+			}
+			cache.erase(hsh(deviceId));
+			return;
+		}
+	}
 }
 
 void Quit() {

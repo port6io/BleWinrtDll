@@ -55,6 +55,8 @@ extern "C" {
 
 	__declspec(dllexport) bool SendData(BLEData* data, bool block);
 
+	__declspec(dllexport) void Disconnect(wchar_t* deviceId);
+
 	__declspec(dllexport) void Quit();
 
 	__declspec(dllexport) void GetError(ErrorMessage* buf);
