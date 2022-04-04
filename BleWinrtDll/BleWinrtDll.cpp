@@ -12,26 +12,26 @@
 
 using namespace std;
 
-using namespace winrt;
-using namespace Windows::Foundation;
-using namespace Windows::Foundation::Collections;
-using namespace Windows::Web::Syndication;
+using namespace winrt::Windows::Foundation;
+using namespace winrt::Windows::Foundation::Collections;
+using namespace winrt::Windows::Web::Syndication;
 
-using namespace Windows::Devices::Bluetooth;
-using namespace Windows::Devices::Bluetooth::GenericAttributeProfile;
-using namespace Windows::Devices::Enumeration;
+using namespace winrt::Windows::Devices::Bluetooth;
+using namespace winrt::Windows::Devices::Bluetooth::Advertisement;
+using namespace winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
+using namespace winrt::Windows::Devices::Enumeration;
 
-using namespace Windows::Storage::Streams;
+using namespace winrt::Windows::Storage::Streams;
 
 union to_guid
 {
 	uint8_t buf[16];
-	guid guid;
+	winrt::guid guid;
 };
 
 const uint8_t BYTE_ORDER[] = { 3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15 };
 
-guid make_guid(const wchar_t* value)
+winrt::guid make_guid(const wchar_t* value)
 {
 	to_guid to_guid;
 	memset(&to_guid, 0, sizeof(to_guid));
@@ -221,7 +221,7 @@ void DeviceWatcher_Added(DeviceWatcher sender, DeviceInformation deviceInfo) {
 	wcscpy_s(deviceUpdate.name, sizeof(deviceUpdate.name) / sizeof(wchar_t), deviceInfo.Name().c_str());
 	deviceUpdate.nameUpdated = true;
 	if (deviceInfo.Properties().HasKey(L"System.Devices.Aep.Bluetooth.Le.IsConnectable")) {
-		deviceUpdate.isConnectable = unbox_value<bool>(deviceInfo.Properties().Lookup(L"System.Devices.Aep.Bluetooth.Le.IsConnectable"));
+		deviceUpdate.isConnectable = winrt::unbox_value<bool>(deviceInfo.Properties().Lookup(L"System.Devices.Aep.Bluetooth.Le.IsConnectable"));
 		deviceUpdate.isConnectableUpdated = true;
 	}
 	{
@@ -239,7 +239,7 @@ void DeviceWatcher_Updated(DeviceWatcher sender, DeviceInformationUpdate deviceI
 	DeviceUpdate deviceUpdate;
 	wcscpy_s(deviceUpdate.id, sizeof(deviceUpdate.id) / sizeof(wchar_t), deviceInfoUpdate.Id().c_str());
 	if (deviceInfoUpdate.Properties().HasKey(L"System.Devices.Aep.Bluetooth.Le.IsConnectable")) {
-		deviceUpdate.isConnectable = unbox_value<bool>(deviceInfoUpdate.Properties().Lookup(L"System.Devices.Aep.Bluetooth.Le.IsConnectable"));
+		deviceUpdate.isConnectable = winrt::unbox_value<bool>(deviceInfoUpdate.Properties().Lookup(L"System.Devices.Aep.Bluetooth.Le.IsConnectable"));
 		deviceUpdate.isConnectableUpdated = true;
 	}
 	{
@@ -264,18 +264,18 @@ void StartDeviceScan() {
 		quitFlag = false;
 		clearError();
 	}
-
-	IVector<hstring> requestedProperties = single_threaded_vector<hstring>({ L"System.Devices.Aep.DeviceAddress", L"System.Devices.Aep.IsConnected", L"System.Devices.Aep.Bluetooth.Le.IsConnectable" });
-	hstring aqsAllBluetoothLEDevices = L"(System.Devices.Aep.ProtocolId:=\"{bb7bb05e-5972-42b5-94fc-76eaa7084d49}\")"; // list Bluetooth LE devices
+	ListenAds();
+	IVector<winrt::hstring> requestedProperties = winrt::single_threaded_vector<winrt::hstring>({ L"System.Devices.Aep.DeviceAddress", L"System.Devices.Aep.IsConnected", L"System.Devices.Aep.Bluetooth.Le.IsConnectable" });
+	winrt::hstring aqsAllBluetoothLEDevices = L"(System.Devices.Aep.ProtocolId:=\"{bb7bb05e-5972-42b5-94fc-76eaa7084d49}\")"; // list Bluetooth LE devices
 	deviceWatcher = DeviceInformation::CreateWatcher(
 		aqsAllBluetoothLEDevices,
 		requestedProperties,
 		DeviceInformationKind::AssociationEndpoint);
 
 	// see https://docs.microsoft.com/en-us/windows/uwp/cpp-and-winrt-apis/handle-events#revoke-a-registered-delegate
-	deviceWatcherAddedRevoker = deviceWatcher.Added(auto_revoke, &DeviceWatcher_Added);
-	deviceWatcherUpdatedRevoker = deviceWatcher.Updated(auto_revoke, &DeviceWatcher_Updated);
-	deviceWatcherCompletedRevoker = deviceWatcher.EnumerationCompleted(auto_revoke, &DeviceWatcher_EnumerationCompleted);
+	deviceWatcherAddedRevoker = deviceWatcher.Added(winrt::auto_revoke, &DeviceWatcher_Added);
+	deviceWatcherUpdatedRevoker = deviceWatcher.Updated(winrt::auto_revoke, &DeviceWatcher_Updated);
+	deviceWatcherCompletedRevoker = deviceWatcher.EnumerationCompleted(winrt::auto_revoke, &DeviceWatcher_EnumerationCompleted);
 	// ~30 seconds scan ; for permanent scanning use BluetoothLEAdvertisementWatcher, see the BluetoothAdvertisement.zip sample
 	deviceScanFinished = false;
 	deviceWatcher.Start();
@@ -312,7 +312,7 @@ void StopDeviceScan() {
 	deviceQueueSignal.notify_one();
 }
 
-fire_and_forget ScanServicesAsync(wchar_t* deviceId) {
+winrt::fire_and_forget ScanServicesAsync(wchar_t* deviceId) {
 	{
 		lock_guard queueGuard(serviceQueueLock);
 		serviceScanFinished = false;
@@ -344,7 +344,7 @@ fire_and_forget ScanServicesAsync(wchar_t* deviceId) {
 			}
 		}
 	}
-	catch (hresult_error& ex)
+	catch (winrt::hresult_error& ex)
 	{
 		saveError(L"%s:%d ScanServicesAsync catch: %s", __WFILE__, __LINE__, ex.message().c_str());
 	}
@@ -376,7 +376,7 @@ ScanStatus PollService(Service* service, bool block) {
 	return res;
 }
 
-fire_and_forget ScanCharacteristicsAsync(wchar_t* deviceId, wchar_t* serviceId) {
+winrt::fire_and_forget ScanCharacteristicsAsync(wchar_t* deviceId, wchar_t* serviceId) {
 	{
 		lock_guard lock(characteristicQueueLock);
 		characteristicScanFinished = false;
@@ -424,7 +424,7 @@ fire_and_forget ScanCharacteristicsAsync(wchar_t* deviceId, wchar_t* serviceId) 
 			}
 		}
 	}
-	catch (hresult_error& ex)
+	catch (winrt::hresult_error& ex)
 	{
 		saveError(L"%s:%d ScanCharacteristicsAsync catch: %s", __WFILE__, __LINE__, ex.message().c_str());
 	}
@@ -479,7 +479,7 @@ void Characteristic_ValueChanged(GattCharacteristic const& characteristic, GattV
 		dataQueueSignal.notify_one();
 	}
 }
-fire_and_forget SubscribeCharacteristicAsync(wchar_t* deviceId, wchar_t* serviceId, wchar_t* characteristicId, bool* result) {
+winrt::fire_and_forget SubscribeCharacteristicAsync(wchar_t* deviceId, wchar_t* serviceId, wchar_t* characteristicId, bool* result) {
 	try {
 		auto characteristic = co_await retrieveCharacteristic(deviceId, serviceId, characteristicId);
 		if (characteristic != nullptr) {
@@ -489,14 +489,14 @@ fire_and_forget SubscribeCharacteristicAsync(wchar_t* deviceId, wchar_t* service
 			else {
 				Subscription *subscription = new Subscription();
 				subscription->characteristic = characteristic;
-				subscription->revoker = characteristic.ValueChanged(auto_revoke, &Characteristic_ValueChanged);
+				subscription->revoker = characteristic.ValueChanged(winrt::auto_revoke, &Characteristic_ValueChanged);
 				subscriptions.push_back(subscription);
 				if (result != 0)
 					*result = true;
 			}
 		}
 	}
-	catch (hresult_error& ex)
+	catch (winrt::hresult_error& ex)
 	{
 		saveError(L"%s:%d SubscribeCharacteristicAsync catch: %s", __WFILE__, __LINE__, ex.message().c_str());
 	}
@@ -525,13 +525,13 @@ bool PollData(BLEData* data, bool block) {
 	return false;
 }
 
-fire_and_forget SendDataAsync(BLEData data, condition_variable* signal, bool* result) {
+winrt::fire_and_forget SendDataAsync(BLEData data, condition_variable* signal, bool* result) {
 	try {
 		auto characteristic = co_await retrieveCharacteristic(data.deviceId, data.serviceUuid, data.characteristicUuid);
 		if (characteristic != nullptr) {
 			// create IBuffer from data
 			DataWriter writer;
-			writer.WriteBytes(array_view<uint8_t const> (data.buf, data.buf + data.size));
+			writer.WriteBytes(winrt::array_view<uint8_t const> (data.buf, data.buf + data.size));
 			IBuffer buffer = writer.DetachBuffer();
 			auto status = co_await characteristic.WriteValueAsync(buffer, GattWriteOption::WriteWithoutResponse);
 			if (status != GattCommunicationStatus::Success)
@@ -540,7 +540,7 @@ fire_and_forget SendDataAsync(BLEData data, condition_variable* signal, bool* re
 				*result = true;
 		}
 	}
-	catch (hresult_error& ex)
+	catch (winrt::hresult_error& ex)
 	{
 		saveError(L"%s:%d SendDataAsync catch: %s", __WFILE__, __LINE__, ex.message().c_str());
 	}
@@ -618,4 +618,34 @@ void Quit() {
 void GetError(ErrorMessage* buf) {
 	lock_guard error_lock(errorLock);
 	wcscpy_s(buf->msg, last_error);
+}
+
+auto serviceId = make_guid(L"008e74d0-7bb3-4ac5-8baf-e5e372cced76");
+void ListenAds() {
+	auto watcher = BluetoothLEAdvertisementWatcher();
+	watcher.ScanningMode(BluetoothLEScanningMode::Active);
+	watcher.Received(TypedEventHandler<BluetoothLEAdvertisementWatcher, BluetoothLEAdvertisementReceivedEventArgs>(
+		[watcher](BluetoothLEAdvertisementWatcher watcherEvent, BluetoothLEAdvertisementReceivedEventArgs eventArgs) {
+			auto ids = eventArgs.Advertisement().ServiceUuids();
+			unsigned int index = -1;
+			if (ids.IndexOf(serviceId, index)) {
+				wstring address = formatBluetoothAddress(eventArgs.BluetoothAddress());
+				std::wcout << "Target service found on device: " << address.data() << std::endl;
+				watcher.Stop();
+			}
+		}
+	));
+	watcher.Start();
+}
+
+const wchar_t* formatBluetoothAddress(unsigned long long BluetoothAddress) {
+	std::wostringstream ret;
+	ret << std::hex << std::setfill(L'0')
+		<< std::setw(2) << ((BluetoothAddress >> (5 * 8)) & 0xff) << ":"
+		<< std::setw(2) << ((BluetoothAddress >> (4 * 8)) & 0xff) << ":"
+		<< std::setw(2) << ((BluetoothAddress >> (3 * 8)) & 0xff) << ":"
+		<< std::setw(2) << ((BluetoothAddress >> (2 * 8)) & 0xff) << ":"
+		<< std::setw(2) << ((BluetoothAddress >> (1 * 8)) & 0xff) << ":"
+		<< std::setw(2) << ((BluetoothAddress >> (0 * 8)) & 0xff);
+	return ret.str().c_str();
 }

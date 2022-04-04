@@ -60,4 +60,8 @@ extern "C" {
 	__declspec(dllexport) void Quit();
 
 	__declspec(dllexport) void GetError(ErrorMessage* buf);
+
+	__declspec(dllexport) void ListenAds();
+
+	__declspec(dllexport) const wchar_t* formatBluetoothAddress(unsigned long long BluetoothAddress);
 }
