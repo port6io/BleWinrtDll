@@ -15,20 +15,16 @@ public class BLE
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct DeviceUpdate
         {
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 100)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
             public string id;
             [MarshalAs(UnmanagedType.I1)]
             public bool isConnectable;
-            [MarshalAs(UnmanagedType.I1)]
-            public bool isConnectableUpdated;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 50)]
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
             public string name;
-            [MarshalAs(UnmanagedType.I1)]
-            public bool nameUpdated;
         }
 
-        [DllImport("BleWinrtDll.dll", EntryPoint = "StartDeviceScan")]
-        public static extern void StartDeviceScan();
+        [DllImport("BleWinrtDll.dll", EntryPoint = "StartDeviceScan", CharSet = CharSet.Unicode)]
+        public static extern void StartDeviceScan(string[] requiredServices);
 
         [DllImport("BleWinrtDll.dll", EntryPoint = "PollDevice")]
         public static extern ScanStatus PollDevice(out DeviceUpdate device, bool block);
@@ -133,9 +129,10 @@ public class BLE
             throw new InvalidOperationException("the old scan is still running");
         currentScan.Found = null;
         currentScan.Finished = null;
+        string[] requiredServices = {"008e74d0-7bb3-4ac5-8baf-e5e372cced76"};
         scanThread = new Thread(() =>
         {
-            Impl.StartDeviceScan();
+            Impl.StartDeviceScan(requiredServices);
             Impl.DeviceUpdate res = new Impl.DeviceUpdate();
             List<string> deviceIds = new List<string>();
             Dictionary<string, string> deviceName = new Dictionary<string, string>();
@@ -148,10 +145,7 @@ public class BLE
                     deviceName[res.id] = "";
                     deviceIsConnectable[res.id] = false;
                 }
-                if (res.nameUpdated)
-                    deviceName[res.id] = res.name;
-                if (res.isConnectableUpdated)
-                    deviceIsConnectable[res.id] = res.isConnectable;
+                Console.WriteLine($"Device found: {res.id} {res.name}");
                 // connectable device
                 if (deviceName[res.id] != "" && deviceIsConnectable[res.id] == true)
                     currentScan.Found?.Invoke(res.id, deviceName[res.id]);

@@ -3,11 +3,9 @@
 #include "stdafx.h"
 
 struct DeviceUpdate {
-	wchar_t id[100];
+	wchar_t id[256];
 	bool isConnectable = false;
-	bool isConnectableUpdated = false;
-	wchar_t name[50];
-	bool nameUpdated = false;
+	wchar_t name[256];
 };
 
 struct Service {
@@ -35,7 +33,7 @@ enum class ScanStatus { PROCESSING, AVAILABLE, FINISHED };
 
 extern "C" {
 
-	__declspec(dllexport) void StartDeviceScan();
+	__declspec(dllexport) void StartDeviceScan(wchar_t* requiredServices[]);
 
 	__declspec(dllexport) ScanStatus PollDevice(DeviceUpdate* device, bool block);
 
@@ -60,8 +58,4 @@ extern "C" {
 	__declspec(dllexport) void Quit();
 
 	__declspec(dllexport) void GetError(ErrorMessage* buf);
-
-	__declspec(dllexport) void ListenAds();
-
-	__declspec(dllexport) const wchar_t* formatBluetoothAddress(unsigned long long BluetoothAddress);
 }
