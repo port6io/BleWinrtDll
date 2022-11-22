@@ -33,7 +33,7 @@ enum class ScanStatus { PROCESSING, AVAILABLE, FINISHED };
 
 extern "C" {
 
-	__declspec(dllexport) void StartDeviceScan(wchar_t* requiredServices[]);
+	__declspec(dllexport) void StartDeviceScan(wchar_t* requiredServices[], std::uint32_t n);
 
 	__declspec(dllexport) ScanStatus PollDevice(DeviceUpdate* device, bool block);
 
@@ -47,6 +47,7 @@ extern "C" {
 
 	__declspec(dllexport) ScanStatus PollCharacteristic(Characteristic* characteristic, bool block);
 
+	/* Return value only makes sense if block=true */
 	__declspec(dllexport) bool SubscribeCharacteristic(wchar_t* deviceId, wchar_t* serviceId, wchar_t* characteristicId, bool block);
 
 	__declspec(dllexport) bool PollData(BLEData* data, bool block);
@@ -58,4 +59,8 @@ extern "C" {
 	__declspec(dllexport) void Quit();
 
 	__declspec(dllexport) void GetError(ErrorMessage* buf);
+
+	using DebugLogCallback = void(const char*);
+	// A log callback for debugging.
+	__declspec(dllexport) void RegisterLogCallback(DebugLogCallback cb);
 }

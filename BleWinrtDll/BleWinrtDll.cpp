@@ -2,6 +2,7 @@
 //
 
 #include "stdafx.h"
+#include <future>
 
 #include "BleWinrtDll.h"
 
@@ -22,6 +23,27 @@ using namespace winrt::Windows::Devices::Bluetooth::GenericAttributeProfile;
 using namespace winrt::Windows::Devices::Enumeration;
 
 using namespace winrt::Windows::Storage::Streams;
+
+DebugLogCallback* logger = nullptr;
+void Log(const char* s) {
+	if (logger)
+		(*logger)(s);
+}
+
+string convert_to_string(const wstring& wstr)
+{
+	// https://stackoverflow.com/questions/215963/how-do-you-properly-use-widechartomultibyte
+	if (wstr.empty()) return string();
+	int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+	string strTo(size_needed, 0);
+	WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+	return strTo;
+}
+
+void Log(const wstring& s) {
+	if (logger)
+		(*logger)(convert_to_string(s).c_str());
+}
 
 union to_guid
 {
@@ -68,6 +90,9 @@ winrt::guid make_guid(const wchar_t* value)
 // call GetCharacteristicsAsync on a service for which a reference is hold in global scope
 // cf. https://stackoverflow.com/a/36106137
 
+// Perhaps more relevant?
+// https://stackoverflow.com/questions/71620883/ble-using-winrt-access-denied-when-executing-getcharacteristicsforuuidasync
+
 mutex errorLock;
 wchar_t last_error[2048];
 struct CharacteristicCacheEntry {
@@ -81,11 +106,13 @@ struct DeviceCacheEntry {
 	BluetoothLEDevice device = nullptr;
 	map<long, ServiceCacheEntry> services = { };
 };
+// Seems like a very necessary lock... but could not get it working :(
+mutex cacheLock;
 map<long, DeviceCacheEntry> cache;
 
 
 // using hashes of uuids to omit storing the c-strings in reliable storage
-long hsh(wchar_t* wstr)
+long hsh(const wchar_t* wstr)
 {
 	long hash = 5381;
 	int c;
@@ -108,9 +135,16 @@ void saveError(const wchar_t* message, ...) {
 	wcout << last_error << endl;
 }
 
-IAsyncOperation<BluetoothLEDevice> retrieveDevice(wchar_t* deviceId) {
-	if (cache.count(hsh(deviceId)))
-		co_return cache[hsh(deviceId)].device;
+IAsyncOperation<BluetoothLEDevice> retrieveDevice(const wchar_t* deviceId) {
+	{
+		lock_guard lock(cacheLock);
+		auto item = cache.find(hsh(deviceId));
+		if (item != cache.end())
+		{
+			Log(L"Using cached connection");
+			co_return item->second.device;
+		}
+	}
 	// !!!! BluetoothLEDevice.FromIdAsync may prompt for consent, in this case bluetooth will fail in unity!
 	BluetoothLEDevice result = co_await BluetoothLEDevice::FromIdAsync(deviceId);
 	if (result == nullptr) {
@@ -118,18 +152,36 @@ IAsyncOperation<BluetoothLEDevice> retrieveDevice(wchar_t* deviceId) {
 		co_return nullptr;
 	}
 	else {
-		clearError();
-		cache[hsh(deviceId)] = { result };
-		co_return cache[hsh(deviceId)].device;
+		try {
+			clearError();
+			co_await chrono::seconds(1);
+			{
+				lock_guard lock(cacheLock);
+				cache[hsh(deviceId)] = { result };
+				const auto& device = cache[hsh(deviceId)].device;
+				Log(L"Connected " + wstring(deviceId));
+				co_return device;
+			}
+		}
+		catch (const std::exception& e) {
+			saveError(L"Connection to %s failed", __WFILE__, __LINE__, deviceId);
+
+		}
 	}
 }
-IAsyncOperation<GattDeviceService> retrieveService(wchar_t* deviceId, wchar_t* serviceId) {
+IAsyncOperation<GattDeviceService> retrieveService(const wchar_t* deviceId, const wchar_t* serviceId) {
 	auto device = co_await retrieveDevice(deviceId);
 	if (device == nullptr)
 		co_return nullptr;
-	if (cache[hsh(deviceId)].services.count(hsh(serviceId)))
-		co_return cache[hsh(deviceId)].services[hsh(serviceId)].service;
-	GattDeviceServicesResult result = co_await device.GetGattServicesForUuidAsync(make_guid(serviceId), BluetoothCacheMode::Cached);
+	{
+		lock_guard lock(cacheLock);
+		if (cache[hsh(deviceId)].services.count(hsh(serviceId)))
+		{
+			Log("Using cached service");
+			co_return cache[hsh(deviceId)].services[hsh(serviceId)].service;
+		}
+	}
+	GattDeviceServicesResult result = co_await device.GetGattServicesForUuidAsync(make_guid(serviceId), BluetoothCacheMode::Uncached);
 	if (result.Status() != GattCommunicationStatus::Success) {
 		saveError(L"%s:%d Failed retrieving services.", __WFILE__, __LINE__);
 		co_return nullptr;
@@ -140,29 +192,47 @@ IAsyncOperation<GattDeviceService> retrieveService(wchar_t* deviceId, wchar_t* s
 	}
 	else {
 		clearError();
-		cache[hsh(deviceId)].services[hsh(serviceId)] = { result.Services().GetAt(0) };
-		co_return cache[hsh(deviceId)].services[hsh(serviceId)].service;
+		{
+			lock_guard lock(cacheLock);
+			cache[hsh(deviceId)].services[hsh(serviceId)] = { result.Services().GetAt(0) };
+			co_return cache[hsh(deviceId)].services[hsh(serviceId)].service;
+		}
 	}
 }
-IAsyncOperation<GattCharacteristic> retrieveCharacteristic(wchar_t* deviceId, wchar_t* serviceId, wchar_t* characteristicId) {
+IAsyncOperation<GattCharacteristic> retrieveCharacteristic(const wchar_t* deviceId, const wchar_t* serviceId, const wchar_t* characteristicId) {
+	Log("retrieveCharacteristic");
 	auto service = co_await retrieveService(deviceId, serviceId);
 	if (service == nullptr)
+	{
+		Log("Service retrieve failed");
 		co_return nullptr;
-	if (cache[hsh(deviceId)].services[hsh(serviceId)].characteristics.count(hsh(characteristicId)))
-		co_return cache[hsh(deviceId)].services[hsh(serviceId)].characteristics[hsh(characteristicId)].characteristic;
+	}
+
+	{
+		lock_guard lock(cacheLock);
+		if (cache[hsh(deviceId)].services[hsh(serviceId)].characteristics.count(hsh(characteristicId)))
+		{
+			Log("Cached characteristic");
+			co_return cache[hsh(deviceId)].services[hsh(serviceId)].characteristics[hsh(characteristicId)].characteristic;
+		}
+	}
 	GattCharacteristicsResult result = co_await service.GetCharacteristicsForUuidAsync(make_guid(characteristicId), BluetoothCacheMode::Cached);
 	if (result.Status() != GattCommunicationStatus::Success) {
-		saveError(L"%s:%d Error scanning characteristics from service %s with status %d", __WFILE__, __LINE__, serviceId, result.Status());
+		saveError(L"%s:%d Error in getCharacteristicsForUuid from service %s and characteristic %s with status %d", 
+			__WFILE__, __LINE__, serviceId, characteristicId, result.Status());
 		co_return nullptr;
 	}
 	else if (result.Characteristics().Size() == 0) {
-		saveError(L"%s:%d No characteristic found with uuid %s", __WFILE__, __LINE__, characteristicId);
+		saveError(L"%s:%d No characteristic found with uuid %s for service %s", __WFILE__, __LINE__, characteristicId, serviceId);
 		co_return nullptr;
 	}
 	else {
 		clearError();
-		cache[hsh(deviceId)].services[hsh(serviceId)].characteristics[hsh(characteristicId)] = { result.Characteristics().GetAt(0) };
-		co_return cache[hsh(deviceId)].services[hsh(serviceId)].characteristics[hsh(characteristicId)].characteristic;
+		{
+			lock_guard lock(cacheLock);
+			cache[hsh(deviceId)].services[hsh(serviceId)].characteristics[hsh(characteristicId)] = { result.Characteristics().GetAt(0) };
+			co_return cache[hsh(deviceId)].services[hsh(serviceId)].characteristics[hsh(characteristicId)].characteristic;
+		}
 	}
 }
 
@@ -187,13 +257,15 @@ bool characteristicScanFinished;
 
 // global flag to release calling thread
 mutex quitLock;
-bool quitFlag = false;
+atomic<bool> quitFlag = false;
 
 struct Subscription {
 	GattCharacteristic characteristic = nullptr;
 	GattCharacteristic::ValueChanged_revoker revoker;
+	template <class A, class B>
+	Subscription(A&& a, B&& b) : characteristic(std::forward<A>(a)), revoker(std::forward<B>(b)) { }
 };
-list<Subscription*> subscriptions;
+list<Subscription> subscriptions;
 mutex subscribeQueueLock;
 condition_variable subscribeQueueSignal;
 
@@ -203,12 +275,10 @@ condition_variable dataQueueSignal;
 
 bool QuittableWait(condition_variable& signal, unique_lock<mutex>& waitLock) {
 	{
-		lock_guard quit_lock(quitLock);
 		if (quitFlag)
 			return true;
 	}
 	signal.wait(waitLock);
-	lock_guard quit_lock(quitLock);
 	return quitFlag;
 }
 
@@ -219,7 +289,6 @@ winrt::fire_and_forget DeviceWatcher_Received(BluetoothLEAdvertisementWatcher wa
 	wcscpy_s(deviceUpdate.id, sizeof(deviceUpdate.id) / sizeof(wchar_t), dev.DeviceInformation().Id().c_str());
 	wcscpy_s(deviceUpdate.name, sizeof(deviceUpdate.name) / sizeof(wchar_t), eventArgs.Advertisement().LocalName().c_str());
 	{
-		lock_guard lock(quitLock);
 		if (quitFlag)
 			co_return;
 	}
@@ -230,28 +299,31 @@ winrt::fire_and_forget DeviceWatcher_Received(BluetoothLEAdvertisementWatcher wa
 	}
 }
 
-void StartDeviceScan(wchar_t* requiredServices[]) {
+void StartDeviceScan(wchar_t* requiredServices[], std::uint32_t n) {
 	// as this is the first function that must be called, if Quit() was called before, assume here that the client wants to restart
+	quitFlag = false;
+	clearError();
+	Log("StartDeviceScan");
 	{
-		lock_guard lock(quitLock);
-		quitFlag = false;
-		clearError();
+		lock_guard lock(deviceQueueLock);
+		while (deviceQueue.size() > 0)
+			deviceQueue.pop();
 	}
-	
+
 	deviceWatcher = BluetoothLEAdvertisementWatcher();
 	deviceWatcher.AllowExtendedAdvertisements(true);
 	deviceWatcher.ScanningMode(BluetoothLEScanningMode::Active);
-	
-	int loop = sizeof(*requiredServices) / sizeof(wchar_t*);
-	for (int i = 0; i < loop; i++) {
+
+	for (std::uint32_t i = 0; i < n; i++) {
 		deviceWatcher.AdvertisementFilter().Advertisement().ServiceUuids().Append(make_guid(requiredServices[i]));
 	}
 	deviceWatcherReceivedRevoker = deviceWatcher.Received(winrt::auto_revoke, &DeviceWatcher_Received);
 	deviceWatcher.Start();
-	deviceQueueSignal.notify_one();
+	// deviceQueueSignal.notify_one();
 }
 
 void StopDeviceScan() {
+	Log("StopDeviceScan");
 	lock_guard lock(deviceQueueLock);
 	if (deviceWatcher != nullptr) {
 		deviceWatcherReceivedRevoker.revoke();
@@ -285,18 +357,21 @@ winrt::fire_and_forget ScanServicesAsync(wchar_t* deviceId) {
 		lock_guard queueGuard(serviceQueueLock);
 		serviceScanFinished = false;
 	}
+	Log(L"Schanning services of " + wstring(deviceId));
 	try {
-		auto bluetoothLeDevice = co_await retrieveDevice(deviceId);
+		const auto bluetoothLeDevice = co_await retrieveDevice(deviceId);
+		co_await chrono::milliseconds(1); // Never too much waiting with ble
 		if (bluetoothLeDevice != nullptr) {
+			Log("GetGattServicesAsync");
 			GattDeviceServicesResult result = co_await bluetoothLeDevice.GetGattServicesAsync(BluetoothCacheMode::Uncached);
 			if (result.Status() == GattCommunicationStatus::Success) {
+				Log("GetGattServicesAsync succeeded");
 				IVectorView<GattDeviceService> services = result.Services();
-				for (auto&& service : services)
+				for (const auto& service : services)
 				{
 					Service serviceStruct;
 					wcscpy_s(serviceStruct.uuid, sizeof(serviceStruct.uuid) / sizeof(wchar_t), to_hstring(service.Uuid()).c_str());
 					{
-						lock_guard lock(quitLock);
 						if (quitFlag)
 							break;
 					}
@@ -305,6 +380,11 @@ winrt::fire_and_forget ScanServicesAsync(wchar_t* deviceId) {
 						serviceQueue.push(serviceStruct);
 						serviceQueueSignal.notify_one();
 					}
+					// {
+					// 	Log(L"Caching service " + wstring(serviceStruct.uuid));
+					// 	lock_guard lock(cacheLock);
+					// 	cache[hsh(deviceId)].services[hsh(serviceStruct.uuid)] = { service };
+					// }
 				}
 			}
 			else {
@@ -344,17 +424,19 @@ ScanStatus PollService(Service* service, bool block) {
 	return res;
 }
 
-winrt::fire_and_forget ScanCharacteristicsAsync(wchar_t* deviceId, wchar_t* serviceId) {
+winrt::fire_and_forget ScanCharacteristicsAsync(unique_ptr<wstring> deviceId, unique_ptr<wstring> serviceId) {
+	Log(L"Scanning characteristics of " + *deviceId);
 	{
 		lock_guard lock(characteristicQueueLock);
 		characteristicScanFinished = false;
 	}
 	try {
-		auto service = co_await retrieveService(deviceId, serviceId);
+		auto service = co_await retrieveService(deviceId->c_str(), serviceId->c_str());
+		co_await chrono::milliseconds(100);
 		if (service != nullptr) {
 			GattCharacteristicsResult charScan = co_await service.GetCharacteristicsAsync(BluetoothCacheMode::Uncached);
 			if (charScan.Status() != GattCommunicationStatus::Success)
-				saveError(L"%s:%d Error scanning characteristics from service %s width status %d", __WFILE__, __LINE__, serviceId, (int)charScan.Status());
+				saveError(L"%s:%d Error scanning characteristics from service %s width status %d", __WFILE__, __LINE__, *serviceId, (int)charScan.Status());
 			else {
 				for (auto c : charScan.Characteristics())
 				{
@@ -378,11 +460,14 @@ winrt::fire_and_forget ScanCharacteristicsAsync(wchar_t* deviceId, wchar_t* serv
 							clearError();
 						}
 					}
-					{
-						lock_guard lock(quitLock);
-						if (quitFlag)
-							break;
-					}
+					if (quitFlag)
+						break;
+					// {
+					// 	const auto hash = hsh(charStruct.uuid);
+					// 	Log(L"Caching " + wstring(charStruct.uuid) + L" of service " + *serviceId + L" and hash " + to_wstring(hash));
+					// 	lock_guard lock(cacheLock);
+					// 	cache[hsh(deviceId->c_str())].services[hsh(serviceId->c_str())].characteristics[hash] = { c };
+					// }
 					{
 						lock_guard queueGuard(characteristicQueueLock);
 						characteristicQueue.push(charStruct);
@@ -404,7 +489,7 @@ winrt::fire_and_forget ScanCharacteristicsAsync(wchar_t* deviceId, wchar_t* serv
 }
 
 void ScanCharacteristics(wchar_t* deviceId, wchar_t* serviceId) {
-	ScanCharacteristicsAsync(deviceId, serviceId);
+	ScanCharacteristicsAsync(make_unique<wstring>(deviceId), make_unique<wstring>(serviceId));
 }
 
 ScanStatus PollCharacteristic(Characteristic* characteristic, bool block) {
@@ -427,6 +512,7 @@ ScanStatus PollCharacteristic(Characteristic* characteristic, bool block) {
 
 void Characteristic_ValueChanged(GattCharacteristic const& characteristic, GattValueChangedEventArgs args)
 {
+	// Log(L"Characteristic_ValueChanged " + wstring(to_hstring(characteristic.Uuid()).c_str()));
 	BLEData data;
 	wcscpy_s(data.characteristicUuid, sizeof(data.characteristicUuid) / sizeof(wchar_t), to_hstring(characteristic.Uuid()).c_str());
 	wcscpy_s(data.serviceUuid, sizeof(data.serviceUuid) / sizeof(wchar_t), to_hstring(characteristic.Service().Uuid()).c_str());
@@ -437,7 +523,6 @@ void Characteristic_ValueChanged(GattCharacteristic const& characteristic, GattV
 	memcpy(data.buf, args.CharacteristicValue().data(), data.size);
 
 	{
-		lock_guard lock(quitLock);
 		if (quitFlag)
 			return;
 	}
@@ -448,19 +533,18 @@ void Characteristic_ValueChanged(GattCharacteristic const& characteristic, GattV
 	}
 }
 
-winrt::fire_and_forget SubscribeCharacteristicAsync(wchar_t* deviceId, wchar_t* serviceId, wchar_t* characteristicId, bool* result) {
+winrt::fire_and_forget SubscribeCharacteristicAsync(unique_ptr<wstring> deviceId, unique_ptr<wstring> serviceId, unique_ptr<wstring> characteristicId, bool* result) {
+	Log("SubscribeCharacteristicAsync");
 	try {
-		auto characteristic = co_await retrieveCharacteristic(deviceId, serviceId, characteristicId);
+		auto characteristic = co_await retrieveCharacteristic(deviceId->c_str(), serviceId->c_str(), characteristicId->c_str());
 		if (characteristic != nullptr) {
 			auto status = co_await characteristic.WriteClientCharacteristicConfigurationDescriptorAsync(GattClientCharacteristicConfigurationDescriptorValue::Notify);
 			if (status != GattCommunicationStatus::Success)
-				saveError(L"%s:%d Error subscribing to characteristic with uuid %s and status %d", __WFILE__, __LINE__, characteristicId, status);
+				saveError(L"%s:%d Error subscribing to characteristic with uuid %s and status %d", __WFILE__, __LINE__, *characteristicId, status);
 			else {
-				Subscription *subscription = new Subscription();
-				subscription->characteristic = characteristic;
-				subscription->revoker = characteristic.ValueChanged(winrt::auto_revoke, &Characteristic_ValueChanged);
-				subscriptions.push_back(subscription);
-				if (result != 0)
+				Log("Subscription successful");
+				subscriptions.emplace_back(characteristic, characteristic.ValueChanged(winrt::auto_revoke, &Characteristic_ValueChanged));
+				if (result != nullptr)
 					*result = true;
 			}
 		}
@@ -471,10 +555,12 @@ winrt::fire_and_forget SubscribeCharacteristicAsync(wchar_t* deviceId, wchar_t* 
 	}
 	subscribeQueueSignal.notify_one();
 }
+/* */
 bool SubscribeCharacteristic(wchar_t* deviceId, wchar_t* serviceId, wchar_t* characteristicId, bool block) {
+	Log(L"SubsctribeCharacteristic " + wstring(characteristicId));
 	unique_lock<mutex> lock(subscribeQueueLock);
 	bool result = false;
-	SubscribeCharacteristicAsync(deviceId, serviceId, characteristicId, block ? &result : 0);
+	SubscribeCharacteristicAsync(make_unique<wstring>(deviceId), make_unique<wstring>(serviceId), make_unique<wstring>(characteristicId), block ? &result : 0);
 	if (block && QuittableWait(subscribeQueueSignal, lock))
 		return false;
 
@@ -494,17 +580,17 @@ bool PollData(BLEData* data, bool block) {
 	return false;
 }
 
-winrt::fire_and_forget SendDataAsync(BLEData data, condition_variable* signal, bool* result) {
+winrt::fire_and_forget SendDataAsync(unique_ptr<BLEData> data, condition_variable* signal, bool* result) {
 	try {
-		auto characteristic = co_await retrieveCharacteristic(data.deviceId, data.serviceUuid, data.characteristicUuid);
+		auto characteristic = co_await retrieveCharacteristic(data->deviceId, data->serviceUuid, data->characteristicUuid);
 		if (characteristic != nullptr) {
 			// create IBuffer from data
 			DataWriter writer;
-			writer.WriteBytes(winrt::array_view<uint8_t const> (data.buf, data.buf + data.size));
+			writer.WriteBytes(winrt::array_view<uint8_t const>(data->buf, data->buf + data->size));
 			IBuffer buffer = writer.DetachBuffer();
 			auto status = co_await characteristic.WriteValueAsync(buffer, GattWriteOption::WriteWithoutResponse);
 			if (status != GattCommunicationStatus::Success)
-				saveError(L"%s:%d Error writing value to characteristic with uuid %s", __WFILE__, __LINE__, data.characteristicUuid);
+				saveError(L"%s:%d Error writing value to characteristic with uuid %s", __WFILE__, __LINE__, data->characteristicUuid);
 			else if (result != 0)
 				*result = true;
 		}
@@ -522,31 +608,48 @@ bool SendData(BLEData* data, bool block) {
 	condition_variable signal;
 	bool result = false;
 	// copy data to stack so that caller can free its memory in non-blocking mode
-	SendDataAsync(*data, block ? &signal : 0, block ? &result : 0);
+	SendDataAsync(make_unique<BLEData>(*data), block ? &signal : 0, block ? &result : 0);
 	if (block)
 		signal.wait(lock);
 
 	return result;
 }
 
-void Disconnect(wchar_t* deviceId) {
-	for (auto device : cache) {
-		if (hsh(deviceId) == device.first) {
-			device.second.device.Close();
-			for (auto service : device.second.services) {
+void Disconnect(wchar_t* deviceId)
+{
+	try {
+		std::wstring msg = L"BleWinRT Disconnect...";
+		msg += deviceId;
+		Log(msg);
+		const auto hash = hsh(deviceId);
+		{
+			lock_guard lock(cacheLock);
+			const auto devP = cache.find(hash);
+			if (devP == cache.end())
+				return;
+			Log("Cache entry found");
+			// Copying device and services as in Quit function. 
+			auto dev = devP->second;
+			if (dev.device != nullptr)
+				dev.device.Close();
+			Log("Device closed. Services...");
+			for (auto service : dev.services)
+			{
+				msg = L"Closing service " + std::to_wstring(service.first);
+				Log(msg);
 				service.second.service.Close();
 			}
-			cache.erase(hsh(deviceId));
-			return;
+			cache.erase(hash);
 		}
+
+	}
+	catch (const std::exception& e) {
+		Log(e.what());
 	}
 }
 
 void Quit() {
-	{
-		lock_guard lock(quitLock);
-		quitFlag = true;
-	}
+	quitFlag = true;
 	StopDeviceScan();
 	deviceQueueSignal.notify_one();
 	{
@@ -566,22 +669,26 @@ void Quit() {
 	subscribeQueueSignal.notify_one();
 	{
 		lock_guard lock(subscribeQueueLock);
-		for (auto subscription : subscriptions)
-			subscription->revoker.revoke();
-		subscriptions = {};
+		for (auto& subscription : subscriptions)
+			subscription.revoker.revoke();
+		subscriptions.clear();
 	}
 	dataQueueSignal.notify_one();
 	{
 		lock_guard lock(dataQueueLock);
 		dataQueue = {};
 	}
-	for (auto device : cache) {
-		device.second.device.Close();
-		for (auto service : device.second.services) {
-			service.second.service.Close();
+	{
+		lock_guard lock(cacheLock);
+		/* Copy as per original source. Dunno why. */
+		for (auto device : cache) {
+			device.second.device.Close();
+			for (auto service : device.second.services) {
+				service.second.service.Close();
+			}
 		}
+		cache.clear();
 	}
-	cache.clear();
 }
 
 void GetError(ErrorMessage* buf) {
@@ -599,4 +706,8 @@ const wchar_t* formatBluetoothAddress(unsigned long long BluetoothAddress) {
 		<< std::setw(2) << ((BluetoothAddress >> (1 * 8)) & 0xff) << ":"
 		<< std::setw(2) << ((BluetoothAddress >> (0 * 8)) & 0xff);
 	return ret.str().c_str();
+}
+
+void RegisterLogCallback(DebugLogCallback cb) {
+	logger = cb;
 }
