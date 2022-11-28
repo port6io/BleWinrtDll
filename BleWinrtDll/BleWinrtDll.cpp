@@ -163,9 +163,8 @@ IAsyncOperation<BluetoothLEDevice> retrieveDevice(const wchar_t* deviceId) {
 				co_return device;
 			}
 		}
-		catch (const std::exception& e) {
+		catch (const std::exception&) {
 			saveError(L"Connection to %s failed", __WFILE__, __LINE__, deviceId);
-
 		}
 	}
 }
@@ -218,7 +217,7 @@ IAsyncOperation<GattCharacteristic> retrieveCharacteristic(const wchar_t* device
 	}
 	GattCharacteristicsResult result = co_await service.GetCharacteristicsForUuidAsync(make_guid(characteristicId), BluetoothCacheMode::Cached);
 	if (result.Status() != GattCommunicationStatus::Success) {
-		saveError(L"%s:%d Error in getCharacteristicsForUuid from service %s and characteristic %s with status %d", 
+		saveError(L"%s:%d Error in getCharacteristicsForUuid from service %s and characteristic %s with status %d",
 			__WFILE__, __LINE__, serviceId, characteristicId, result.Status());
 		co_return nullptr;
 	}
@@ -286,8 +285,20 @@ winrt::fire_and_forget DeviceWatcher_Received(BluetoothLEAdvertisementWatcher wa
 	auto dev = co_await BluetoothLEDevice::FromBluetoothAddressAsync(eventArgs.BluetoothAddress());
 	DeviceUpdate deviceUpdate;
 	deviceUpdate.isConnectable = dev.DeviceInformation().Pairing().CanPair();
+	const auto nameLen = sizeof(deviceUpdate.name) / sizeof(wchar_t);
+	Log(L"Scan received " + wstring(eventArgs.Advertisement().LocalName().c_str()));
+	// TODO: Parametrize manufacturer id
+	auto manData = eventArgs.Advertisement().GetManufacturerDataByCompanyId(0xFFFF);
+	if (manData.begin() != manData.end()) 
+	{
+		const auto& data = manData.First().Current().Data();
+		const auto n = min(data.Length(), sizeof(deviceUpdate.advData) / sizeof(deviceUpdate.advData[0]));
+		memcpy(deviceUpdate.advData, data.data(), n * sizeof(deviceUpdate.advData[0]));
+		deviceUpdate.advDataLen = (decltype(deviceUpdate.advDataLen)) n;
+		Log(L"Scan manufacturer data has length " + std::to_wstring((int)n));
+	}
 	wcscpy_s(deviceUpdate.id, sizeof(deviceUpdate.id) / sizeof(wchar_t), dev.DeviceInformation().Id().c_str());
-	wcscpy_s(deviceUpdate.name, sizeof(deviceUpdate.name) / sizeof(wchar_t), eventArgs.Advertisement().LocalName().c_str());
+	wcscpy_s(deviceUpdate.name, nameLen, eventArgs.Advertisement().LocalName().c_str());
 	{
 		if (quitFlag)
 			co_return;

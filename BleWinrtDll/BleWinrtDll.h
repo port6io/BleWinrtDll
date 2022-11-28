@@ -6,6 +6,8 @@ struct DeviceUpdate {
 	wchar_t id[256];
 	bool isConnectable = false;
 	wchar_t name[256];
+	uint8_t advData[32];
+	uint32_t advDataLen;
 };
 
 struct Service {
